@@ -1,0 +1,37 @@
+# 依赖
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# 本地密钥 / 环境变量：TMDB_API_KEY 只放 CF Secret 或本机 shell，不进仓库
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+data/
+
+# Cloudflare / Wrangler 本地状态
+.wrangler/
+.wrangler.json
+
+# 构建与缓存产物
+# 注意：worker/_meta.js 是随仓库提交的兜底产物，不能忽略
+dist/
+build/
+.cache/
+*.tsbuildinfo
+*.tmp
+*.log
+log/
+logs/
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/

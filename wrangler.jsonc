@@ -1,0 +1,15 @@
+{
+  // Worker 名称：必须与 Cloudflare Dashboard 中创建/导入的 Worker 名称完全一致，否则 Workers Builds 会失败
+  "name": "makka-media-hub",
+  // 入口：/api/* 走数据接口，其余请求回落 public/ 静态资源
+  "main": "worker/index.js",
+  "compatibility_date": "2026-06-01",
+  // 静态资源目录与绑定名（worker/index.js 通过 env.ASSETS.fetch(request) 回落）
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+  "observability": {
+    "enabled": true
+  }
+}
