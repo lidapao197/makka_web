@@ -30,6 +30,11 @@
 
     <div class="topbar-actions">
       <button id="sourceBadge" class="source-badge" title="查看数据来源"><span class="dot"></span><span id="sourceText">连接中</span></button>
+      <button id="favBtn" class="fav-btn" type="button" aria-pressed="false" title="我的收藏">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z"/></svg>
+        <span>收藏</span>
+        <span class="fav-count" id="favCount">0</span>
+      </button>
       <button id="themeBtn" class="icon-btn" aria-label="切换到日间模式">
         <svg class="icon-sun" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
         <svg class="icon-moon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"/></svg>
@@ -63,6 +68,13 @@
       <div><span class="eyebrow">Library</span><h2 id="libraryTitle">全部影视</h2></div>
       <span class="library-note" id="libraryNote">点击卡片查看详情</span>
     </div>
+    <div class="fav-toolbar" id="favToolbar" hidden>
+      <span class="fav-hint">收藏仅保存在当前浏览器，可导出 JSON 备份或导入到其它设备</span>
+      <button type="button" class="tool-btn" id="favExport">导出 JSON</button>
+      <button type="button" class="tool-btn" id="favImport">导入 JSON</button>
+      <button type="button" class="tool-btn tool-btn--danger" id="favClear">清空收藏</button>
+      <input type="file" id="favFile" accept="application/json,.json" hidden>
+    </div>
     <div class="grid" id="grid"></div>
     <div class="pager" id="pager"></div>
   </section>
@@ -71,7 +83,7 @@
 <footer class="footer">
   <div class="shell footer-inner">
     <span>© 2026 Makkah导航 · 栏目与筛选定义源自 <code>lib/</code> 历史数据目录</span>
-    <span>本站仅做信息展示与第三方跳转，不存储、不播放任何视频内容。</span>
+    <span>本站仅做信息展示与第三方跳转，不存储、不播放视频内容；收藏仅保存影片元数据于本地浏览器。</span>
   </div>
 </footer>
 

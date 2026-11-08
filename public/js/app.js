@@ -5,10 +5,13 @@ const $ = sel => document.querySelector(sel);
 const ICON_STAR = '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.4l2.95 5.98 6.6.96-4.77 4.65 1.12 6.57L12 17.46l-5.9 3.1 1.12-6.57L2.45 9.34l6.6-.96L12 2.4Z"/></svg>';
 const ICON_X = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>';
 const ICON_EXT = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9"/><path d="M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></svg>';
+const ICON_BOOKMARK = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z"/></svg>';
+const ICON_BOOKMARK_ON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z"/></svg>';
 const state = {
   modules: [], quick: [], version: '', keyConfigured: false, moduleId: 'genreRank', params: {}, page: 1,
   searching: false, searchQuery: '', searchTimer: null,
-  payload: null, currentItems: [], abort: null
+  payload: null, currentItems: [], abort: null,
+  view: 'browse', favorites: [], modalItem: null
 };
 
 const KEY_STORAGE = 'makka-tmdb-key';
@@ -16,6 +19,92 @@ function getLocalKey() { try { return localStorage.getItem(KEY_STORAGE) || ''; }
 function setLocalKey(v) { try { v ? localStorage.setItem(KEY_STORAGE, v) : localStorage.removeItem(KEY_STORAGE); } catch (_) { /* 忽略 */ } }
 function apiHeaders() { const k = getLocalKey(); return k ? { 'X-TMDB-Key': k } : {}; }
 function hasAnyKey() { return state.keyConfigured || Boolean(getLocalKey()); }
+
+/* ---------------- 收藏存储层 ----------------
+ * 运行时数据存于浏览器本地，本地 Express 与 Cloudflare Workers 共用同一份前端，
+ * 两端均无需后端写接口。日后要跨设备同步时，只需替换本层的读写实现。 */
+const FAV_STORAGE = 'makka-favorites-v1';
+const FAV_FIELDS = [
+  'tmdbId', 'mediaType', 'title', 'genreTitle', 'description', 'releaseDate',
+  'subTitle', 'posterPath', 'backdropPath', 'rating', 'originCountry', 'originalLanguage'
+];
+
+function favId(m) {
+  if (m && typeof m.key === 'string' && m.key) return m.key;
+  const id = Number(m && (m.tmdbId || m.id));
+  const type = m && (m.mediaType === 'movie' || m.mediaType === 'tv') ? m.mediaType : 'other';
+  if (Number.isFinite(id) && id > 0) return `${type}:${id}`;
+  return `title:${String((m && m.title) || '').trim()}|${String((m && m.releaseDate) || '').slice(0, 4)}`;
+}
+function readFavorites() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(FAV_STORAGE) || 'null');
+    const list = raw && Array.isArray(raw.items) ? raw.items : [];
+    return list.filter(x => x && typeof x === 'object' && typeof x.key === 'string' && typeof x.title === 'string');
+  } catch (_) { return []; }
+}
+function writeFavorites(list) {
+  try {
+    localStorage.setItem(FAV_STORAGE, JSON.stringify({ v: 1, items: list }));
+    return true;
+  } catch (_) {
+    showToast('收藏保存失败：浏览器存储空间不足或已被禁用');
+    return false;
+  }
+}
+function favSnapshot(m) {
+  const item = { key: favId(m), addedAt: Date.now() };
+  FAV_FIELDS.forEach(k => {
+    const v = m[k];
+    if (v !== undefined && v !== null && v !== '') item[k] = v;
+  });
+  return item;
+}
+function isFavorite(m) {
+  if (!m) return false;
+  const key = favId(m);
+  return state.favorites.some(x => x.key === key);
+}
+function toggleFavorite(m) {
+  if (!m || m.type === 'text') return false;
+  const key = favId(m);
+  const idx = state.favorites.findIndex(x => x.key === key);
+  const next = state.favorites.slice();
+  if (idx >= 0) next.splice(idx, 1);
+  else next.unshift(favSnapshot(m));
+  if (!writeFavorites(next)) return false;
+  state.favorites = next;
+  updateFavUI();
+  return idx < 0;
+}
+function favToggleLabel(btn, on) {
+  btn.innerHTML = (on ? ICON_BOOKMARK_ON : ICON_BOOKMARK) + (on ? '已收藏' : '加入收藏');
+  btn.classList.toggle('is-on', on);
+  btn.setAttribute('aria-pressed', String(on));
+}
+function updateFavUI() {
+  const badge = $('#favCount');
+  if (badge) badge.textContent = String(state.favorites.length);
+  const btn = $('#favBtn');
+  if (btn) {
+    const on = state.view === 'favorites';
+    btn.classList.toggle('is-active', on);
+    btn.setAttribute('aria-pressed', String(on));
+  }
+  document.querySelectorAll('.card[data-fav-key]').forEach(el => {
+    const on = state.favorites.some(x => x.key === el.dataset.favKey);
+    el.classList.toggle('is-fav', on);
+    const star = el.querySelector('.fav-star');
+    if (!star) return;
+    star.classList.toggle('is-on', on);
+    star.innerHTML = on ? ICON_BOOKMARK_ON : ICON_BOOKMARK;
+    star.setAttribute('aria-pressed', String(on));
+    star.title = on ? '取消收藏' : '加入收藏';
+    star.setAttribute('aria-label', on ? '取消收藏' : '加入收藏');
+  });
+  const toggle = $('#favToggle');
+  if (toggle) favToggleLabel(toggle, isFavorite(state.modalItem));
+}
 
 /* ---------------- 工具 ---------------- */
 function esc(v) {
@@ -65,6 +154,8 @@ function isVisible(p) {
 /* ---------------- 初始化 ---------------- */
 async function init() {
   bindStatic();
+  state.favorites = readFavorites();
+  updateFavUI();
   let saved = 'dark';
   try { saved = localStorage.getItem('frame-theme') || 'dark'; } catch (_) { /* file:// 下可能不可用 */ }
   setTheme(saved);
@@ -101,6 +192,8 @@ function setSearchMode(on, q = '') {
 }
 
 function exitSearch(reload = true) {
+  const fromFavorites = state.view === 'favorites';
+  restoreBrowseUI();
   clearTimeout(state.searchTimer);
   const wasSearching = state.searching;
   state.searching = false;
@@ -109,12 +202,13 @@ function exitSearch(reload = true) {
   $('#search').value = '';
   syncSearch();
   setSearchMode(false);
-  if (reload && wasSearching) load();
+  if ((reload && wasSearching) || fromFavorites) load();
 }
 
 function applyModule(id, preset = {}) {
   const m = state.modules.find(x => x.id === id);
   if (!m) return;
+  restoreBrowseUI();
   state.moduleId = id;
   const params = { ...m.defaults };
   Object.entries(preset).forEach(([k, v]) => {
@@ -186,6 +280,7 @@ function queryParams() {
 
 /* ---------------- 数据加载 ---------------- */
 async function load() {
+  if (state.view === 'favorites') return;
   if (state.abort) state.abort.abort();
   state.abort = new AbortController();
   showLoading();
@@ -251,20 +346,24 @@ function renderGrid() {
     return;
   }
   grid.classList.remove('is-empty');
-  grid.innerHTML = list.map((m, i) => {
-    const idx = items.indexOf(m);
-    const cover = imgFor(m.posterPath);
-    return `<article class="card" data-index="${idx}" tabindex="0" role="button" aria-label="查看《${esc(m.title)}》详情" style="--i:${Math.min(i, 14)}">
-      <div class="poster">
-        <div class="poster-fallback">${esc(String(m.title || '影').slice(0, 1))}</div>
-        ${cover ? `<img src="${esc(cover)}" alt="${esc(m.title)} 海报" loading="lazy">` : ''}
-      </div>
-      <div class="card-body">
-        <h3 class="card-title" title="${esc(m.title)}">${esc(m.title)}</h3>
-        <p class="card-date">${esc(dateOf(m))}</p>
-      </div>
-    </article>`;
-  }).join('');
+  grid.innerHTML = list.map((m, i) => cardHtml(m, items.indexOf(m), i)).join('');
+}
+
+function cardHtml(m, idx, i) {
+  const cover = imgFor(m.posterPath);
+  const key = favId(m);
+  const on = isFavorite(m);
+  return `<article class="card ${on ? 'is-fav' : ''}" data-index="${idx}" data-fav-key="${esc(key)}" tabindex="0" role="button" aria-label="查看《${esc(m.title)}》详情" style="--i:${Math.min(i, 14)}">
+    <div class="poster">
+      <div class="poster-fallback">${esc(String(m.title || '影').slice(0, 1))}</div>
+      ${cover ? `<img src="${esc(cover)}" alt="${esc(m.title)} 海报" loading="lazy">` : ''}
+      <button type="button" class="fav-star ${on ? 'is-on' : ''}" data-fav-toggle aria-pressed="${on}" title="${on ? '取消收藏' : '加入收藏'}" aria-label="${on ? '取消收藏' : '加入收藏'}">${on ? ICON_BOOKMARK_ON : ICON_BOOKMARK}</button>
+    </div>
+    <div class="card-body">
+      <h3 class="card-title" title="${esc(m.title)}">${esc(m.title)}</h3>
+      <p class="card-date">${esc(dateOf(m))}</p>
+    </div>
+  </article>`;
 }
 
 function renderPager() {
@@ -273,6 +372,104 @@ function renderPager() {
     <button type="button" class="page-btn" data-page="prev" ${state.page <= 1 ? 'disabled' : ''}>← 上一页</button>
     <span class="page-num">第 ${state.page} 页</span>
     <button type="button" class="page-btn" data-page="next" ${hasMore ? '' : 'disabled'}>下一页 →</button>`;
+}
+
+/* ---------------- 我的收藏 ---------------- */
+function showFavoritesView() {
+  state.view = 'favorites';
+  if (state.abort) { state.abort.abort(); state.abort = null; }
+  state.searching = false;
+  state.searchQuery = '';
+  $('#search').value = '';
+  syncSearch();
+  document.querySelector('.browse').hidden = true;
+  $('#filterWrap').hidden = true;
+  $('#favToolbar').hidden = false;
+  $('#libraryTitle').textContent = '我的收藏';
+  $('#libraryNote').textContent = `共 ${state.favorites.length} 部 · 保存在当前浏览器`;
+  $('#pager').innerHTML = '';
+  $('#resultMeta').innerHTML = `我的收藏：<strong>${state.favorites.length} 部影片</strong>`;
+  const grid = $('#grid');
+  grid.classList.remove('is-loading');
+  if (!state.favorites.length) {
+    grid.classList.add('is-empty');
+    grid.innerHTML = '<div class="empty"><h3>还没有收藏影片</h3><p>点击卡片右上角的书签，或在详情弹层里点「加入收藏」。</p><button type="button" id="favBackBtn">去浏览影片</button></div>';
+    updateFavUI();
+    return;
+  }
+  grid.classList.remove('is-empty');
+  state.currentItems = state.favorites.slice();
+  grid.innerHTML = state.favorites.map((m, i) => cardHtml(m, i, i)).join('');
+  updateFavUI();
+}
+
+function restoreBrowseUI() {
+  if (state.view !== 'favorites') return;
+  state.view = 'browse';
+  document.querySelector('.browse').hidden = false;
+  $('#favToolbar').hidden = true;
+  setSearchMode(false);
+  updateFavUI();
+}
+
+function toggleFavoritesView() {
+  if (state.view === 'favorites') { restoreBrowseUI(); load(); return; }
+  showFavoritesView();
+}
+
+function exportFavorites() {
+  const data = { v: 1, exportedAt: new Date().toISOString(), items: state.favorites };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `makka-favorites-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  showToast('已导出收藏备份');
+}
+
+function importFavorites(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const raw = JSON.parse(String(reader.result || ''));
+      const list = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.items) ? raw.items : null);
+      if (!list) throw new Error('bad format');
+      const clean = list
+        .filter(x => x && typeof x === 'object' && typeof x.title === 'string')
+        .map(x => {
+          const item = { key: String(x.key || favId(x)), addedAt: Number(x.addedAt) || Date.now() };
+          FAV_FIELDS.forEach(k => {
+            if (x[k] !== undefined && x[k] !== null && x[k] !== '') item[k] = x[k];
+          });
+          return item;
+        });
+      const map = new Map(state.favorites.map(x => [x.key, x]));
+      clean.forEach(x => { if (!map.has(x.key)) map.set(x.key, x); });
+      const merged = [...map.values()].sort((a, b) => b.addedAt - a.addedAt);
+      if (!writeFavorites(merged)) return;
+      state.favorites = merged;
+      showFavoritesView();
+      showToast(`导入完成，当前共 ${merged.length} 部收藏`);
+    } catch (_) {
+      showToast('导入失败：不是有效的收藏 JSON 文件');
+    }
+  };
+  reader.onerror = () => showToast('读取文件失败');
+  reader.readAsText(file);
+}
+
+function clearFavorites() {
+  if (!state.favorites.length) { showToast('收藏已经是空的'); return; }
+  if (!window.confirm(`确定清空全部 ${state.favorites.length} 部收藏？此操作不可撤销，建议先导出备份。`)) return;
+  if (!writeFavorites([])) return;
+  state.favorites = [];
+  showFavoritesView();
+  showToast('已清空收藏');
 }
 
 /* ---------------- 弹层 ---------------- */
@@ -286,6 +483,7 @@ function openModal(html, wide = false) {
 function closeModal() {
   $('#modal').classList.remove('is-open');
   document.body.classList.remove('no-scroll');
+  state.modalItem = null;
 }
 function tmdbLink(m) {
   const id = Number(m.tmdbId || m.id);
@@ -309,8 +507,13 @@ function openDetail(m) {
       </div>
     </div>
     <div class="modal-body">
+      <div class="detail-actions">
+        <button type="button" class="btn-fav" id="favToggle" aria-pressed="false"></button>
+      </div>
       <p class="detail-desc">${esc(m.description || '暂无简介。')}</p>
     </div>`, true);
+  state.modalItem = m;
+  favToggleLabel($('#favToggle'), isFavorite(m));
 }
 
 function openKeyModal() {
@@ -347,6 +550,7 @@ function openAbout() {
         <li>请求失败时页面显示错误原因并提供重试（顶部徽章可查看状态）</li>
         <li>快捷榜单来自 <code>lib/ptjc.js</code>，点击可直接切换到对应筛选组合</li>
         <li>网站不含播放器，卡片仅用于展示影片信息</li>
+        <li>收藏只保存影片元数据于当前浏览器，支持导出 / 导入 JSON 备份与迁移</li>
       </ul>
       <div class="info-status" style="margin-top:22px">当前状态 <span id="aboutStatus"></span></div>
     </div>
@@ -377,6 +581,15 @@ function syncSearch() {
 
 /* ---------------- 事件绑定 ---------------- */
 function bindStatic() {
+  $('#favBtn').addEventListener('click', toggleFavoritesView);
+  $('#favExport').addEventListener('click', exportFavorites);
+  $('#favImport').addEventListener('click', () => $('#favFile').click());
+  $('#favFile').addEventListener('change', e => {
+    const file = e.target.files && e.target.files[0];
+    importFavorites(file);
+    e.target.value = '';
+  });
+  $('#favClear').addEventListener('click', clearFavorites);
   $('#themeBtn').addEventListener('click', () => {
     setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
   });
@@ -391,6 +604,7 @@ function bindStatic() {
     clearTimeout(state.searchTimer);
     const v = $('#search').value.trim();
     if (!v) { exitSearch(); return; }
+    restoreBrowseUI();
     state.searching = true;
     state.searchQuery = v;
     state.page = 1;
@@ -435,6 +649,18 @@ function bindStatic() {
   });
 
   $('#grid').addEventListener('click', e => {
+    if (e.target.closest('#favBackBtn')) { restoreBrowseUI(); load(); return; }
+    const star = e.target.closest('[data-fav-toggle]');
+    if (star) {
+      const card = star.closest('.card');
+      const m = card && state.currentItems[Number(card.dataset.index)];
+      if (m) {
+        const on = toggleFavorite(m);
+        showToast(on ? `已收藏《${m.title}》` : `已取消收藏《${m.title}》`);
+        if (state.view === 'favorites') showFavoritesView();
+      }
+      return;
+    }
     if (e.target.closest('#retryLoad')) { load(); return; }
     const reset = e.target.closest('#emptyReset, #noticeReset');
     if (reset) { applyModule(state.moduleId); return; }
@@ -443,6 +669,7 @@ function bindStatic() {
   });
   $('#grid').addEventListener('keydown', e => {
     if (e.key !== 'Enter' && e.key !== ' ') return;
+    if (e.target.closest('[data-fav-toggle]')) return;
     const card = e.target.closest('.card');
     if (card) { e.preventDefault(); openDetail(state.currentItems[Number(card.dataset.index)]); }
   });
@@ -456,6 +683,15 @@ function bindStatic() {
   });
 
   $('#modal').addEventListener('click', e => {
+    if (e.target.closest('#favToggle')) {
+      const m = state.modalItem;
+      if (m) {
+        const on = toggleFavorite(m);
+        showToast(on ? `已收藏《${m.title}》` : `已取消收藏《${m.title}》`);
+        if (state.view === 'favorites' && !on) { closeModal(); showFavoritesView(); }
+      }
+      return;
+    }
     if (e.target.closest('#clearKey')) {
       setLocalKey('');
       closeModal();
