@@ -237,6 +237,258 @@ export async function search(query, rawPage, key) {
     }
 }
 
+/* ------------------------------------------------------------------ *
+ * 网盘搜索：盘搜（so.252035.xyz）+ 觅搜（mipan.so）
+ * ------------------------------------------------------------------ */
+const PAN_API_BASE = 'https://so.252035.xyz';
+const MIPAN_ORIGIN = 'https://www.mipan.so';
+const PAN_ALL_TYPES = ['quark', 'aliyun', 'baidu', 'uc', 'tianyi', 'xunlei', '123', '115', 'mobile', 'guangya', 'magnet', 'ed2k'];
+const MIPAN_ALL_TYPES = [...PAN_ALL_TYPES.filter(t => t !== 'magnet' && t !== 'ed2k'), 'pikpak'];
+const PAN_TYPE_LABEL = {
+    quark: '夸克', aliyun: '阿里', baidu: '百度', uc: 'UC', tianyi: '天翼',
+    xunlei: '迅雷', 123: '123', 115: '115', mobile: '移动', guangya: '光鸭',
+    magnet: '磁力', ed2k: '电驴', pikpak: 'PikPak', other: '其它'
+};
+const PAN_CACHE_TTL = 5 * 60 * 1000;
+const panCache = new Map();
+
+const cleanText = s => String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+const normShareUrl = u => String(u || '').trim().replace(/[?&]+$/, '');
+
+/** 校验用户填写的引擎地址：仅 https、禁止内网与 IP 直连 */
+function resolveApiBase(raw, fallback) {
+    const input = String(raw || '').trim();
+    if (!input) return fallback;
+    let u;
+    try { u = new URL(input); } catch (e) { throw new Error('地址格式不正确'); }
+    if (u.protocol !== 'https:') throw new Error('只支持 https 地址');
+    const host = u.hostname.toLowerCase();
+    if (/^(localhost|0\.0\.0\.0|127\.|10\.|169\.254\.|192\.168\.|::1|\[::1\])/.test(host)
+        || /^172\.(1[6-9]|2\d|3[01])\./.test(host)
+        || /\.local$/.test(host)) {
+        throw new Error('不允许使用内网地址');
+    }
+    const path = u.pathname.replace(/\/+$/, '');
+    return u.origin + (path === '/' ? '' : path);
+}
+
+const QUALITY_KEYWORDS = [
+    { k: ['dolby vision', 'dovi', '杜比视界'], s: 100 },
+    { k: ['hdr10+'], s: 90 },
+    { k: ['hdr10', 'hdr', 'hlg'], s: 80 },
+    { k: ['4k', '2160p', 'uhd', '8k'], s: 70 },
+    { k: ['remux', '蓝光原盘', '原盘', 'bluray', 'blu-ray'], s: 65 },
+    { k: ['高码率', '高码', 'x265', 'h265', 'hevc'], s: 55 },
+    { k: ['杜比全景声', 'atmos'], s: 50 },
+    { k: ['1080p', '1080i', 'fhd'], s: 40 },
+    { k: ['60fps', '60帧'], s: 30 },
+    { k: ['720p'], s: 20 },
+    { k: ['web-dl', 'bdrip'], s: 15 },
+    { k: ['国语', '粤语', '中字', '双语'], s: 5 }
+];
+
+function qualityScore(title) {
+    const t = String(title || '').toLowerCase();
+    return QUALITY_KEYWORDS.reduce((sum, row) => row.k.some(k => t.includes(k)) ? sum + row.s : sum, 0);
+}
+
+function qualityTagsOf(title) {
+    const t = String(title || '').toLowerCase();
+    const tags = [];
+    if (/dolby.?vision|dovi|杜比视界/.test(t)) tags.push('杜比视界');
+    else if (/hdr/.test(t)) tags.push('HDR');
+    if (/4k|2160p|uhd|8k/.test(t)) tags.push('4K');
+    if (/remux|蓝光原盘|bluray|blu-ray|原盘/.test(t)) tags.push('蓝光');
+    if (/高码率|高码|x265|h265|hevc/.test(t)) tags.push('高码');
+    if (/1080p|1080i/.test(t)) tags.push('1080P');
+    if (/60fps|60帧/.test(t)) tags.push('60帧');
+    return tags.slice(0, 3);
+}
+
+function sortByQuality(list) {
+    return list
+        .map((x, i) => ({ x, q: qualityScore(x.title), i }))
+        .sort((a, b) => b.q - a.q || a.i - b.i)
+        .map(v => v.x);
+}
+
+function normalizeBases(input, fallback) {
+    const raw = Array.isArray(input) ? input : (input ? [input] : []);
+    const bases = [];
+    let lastErr = null;
+    for (const item of raw) {
+        try {
+            const base = resolveApiBase(item, '');
+            if (base && !bases.includes(base)) bases.push(base);
+        } catch (e) { lastErr = e; }
+        if (bases.length >= 5) break;
+    }
+    if (bases.length) return bases;
+    if (lastErr) throw lastErr;
+    return [fallback];
+}
+
+function mergeEngineLists(lists) {
+    const seen = new Set();
+    const out = [];
+    lists.forEach(list => (list || []).forEach(item => {
+        const key = item.type + '|' + normShareUrl(item.url);
+        if (seen.has(key)) return;
+        seen.add(key);
+        out.push(item);
+    }));
+    return sortByQuality(out);
+}
+
+function panFetch(url, options = {}) {
+    return fetch(url, { ...options, signal: AbortSignal.timeout(18000) });
+}
+
+async function panSearchOne(q, base) {
+    const ck = 'pan|' + base + '|' + q;
+    const hit = panCache.get(ck);
+    if (hit && hit.expires > Date.now()) return hit.value;
+
+    const res = await panFetch(base + '/api/search', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kw: q, res: 'merge', cloud_types: PAN_ALL_TYPES, src: 'all' })
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const byType = (data && data.data && data.data.merged_by_type) || (data && data.merged_by_type) || {};
+
+    const out = [];
+    const seen = new Set();
+    Object.keys(byType).forEach(type => {
+        (byType[type] || []).forEach(item => {
+            const url = item.url || item.share_url || '';
+            if (!url) return;
+            const key = type + '|' + normShareUrl(url);
+            if (seen.has(key)) return;
+            seen.add(key);
+            const title = cleanText(item.note || item.title || item.name || q);
+            out.push({
+                type,
+                label: PAN_TYPE_LABEL[type] || type,
+                title,
+                url,
+                password: item.password || item.pwd || '',
+                datetime: item.datetime || item.time || '',
+                qualityTags: qualityTagsOf(title)
+            });
+        });
+    });
+
+    const list = sortByQuality(out);
+    if (list.length) panCache.set(ck, { value: list, expires: Date.now() + PAN_CACHE_TTL });
+    return list;
+}
+
+export async function panSearch(keyword, apiBase) {
+    const q = String(keyword || '').trim();
+    if (!q) return [];
+    const bases = normalizeBases(apiBase, PAN_API_BASE);
+    const settled = await Promise.allSettled(bases.map(base => panSearchOne(q, base)));
+    const lists = settled.filter(x => x.status === 'fulfilled').map(x => x.value);
+    if (!lists.length) {
+        const failed = settled.find(x => x.status === 'rejected');
+        throw (failed && failed.reason) || new Error('盘搜请求失败');
+    }
+    return mergeEngineLists(lists);
+}
+
+let mipanToken = { base: '', value: '', expireAt: 0 };
+async function mipanFetchToken(force, base) {
+    if (!force && mipanToken.base === base && mipanToken.value && Date.now() < mipanToken.expireAt) return mipanToken.value;
+    const res = await panFetch(base + '/api/token', {
+        headers: { accept: 'application/json', referer: base + '/' }
+    });
+    if (!res.ok) throw new Error('token HTTP ' + res.status);
+    const data = await res.json().catch(() => null);
+    if (!data || !data.token) throw new Error('未获取到觅搜 token');
+    mipanToken = { base, value: String(data.token), expireAt: Date.now() + PAN_CACHE_TTL };
+    return mipanToken.value;
+}
+
+async function mipanRequest(q, token, base) {
+    const res = await panFetch(base + '/api/search', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-mipan-token': token, referer: base + '/' },
+        body: JSON.stringify({ kw: q })
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+}
+
+async function mipanSearchOne(q, base) {
+    const ck = 'mipan|' + base + '|' + q;
+    const hit = panCache.get(ck);
+    if (hit && hit.expires > Date.now()) return hit.value;
+
+    let data;
+    try {
+        data = await mipanRequest(q, await mipanFetchToken(false, base), base);
+    } catch (e) {
+        data = await mipanRequest(q, await mipanFetchToken(true, base), base);
+    }
+
+    let root = data;
+    if (data && data.data && typeof data.data === 'object') root = data.data;
+
+    const out = [];
+    const seen = new Set();
+    const pushItem = (it, typeHint) => {
+        if (!it) return;
+        const url = it.url || it.link || it.share_url || '';
+        if (!url) return;
+        let type = String(it.type || it.disk_type || typeHint || 'other').toLowerCase();
+        if (type === 'ali') type = 'aliyun';
+        if (type === 'others') type = 'other';
+        if (!MIPAN_ALL_TYPES.includes(type)) return;
+        const key = type + '|' + normShareUrl(url);
+        if (seen.has(key)) return;
+        seen.add(key);
+        const title = cleanText(it.note || it.title || it.name || q);
+        out.push({
+            type,
+            label: PAN_TYPE_LABEL[type] || type,
+            title,
+            url,
+            password: it.password || it.pwd || '',
+            datetime: it.datetime || it.date || it.publishTime || '',
+            qualityTags: qualityTagsOf(title)
+        });
+    };
+    if (Array.isArray(root)) root.forEach(x => pushItem(x));
+    else if (root && Array.isArray(root.results)) {
+        root.results.forEach(x => {
+            if (x && Array.isArray(x.links)) x.links.forEach(l => pushItem(Object.assign({}, x, l), l && l.type));
+            else pushItem(x);
+        });
+    }
+    if (root && root.merged_by_type && typeof root.merged_by_type === 'object') {
+        Object.keys(root.merged_by_type).forEach(t => (root.merged_by_type[t] || []).forEach(item => pushItem(item, t)));
+    }
+
+    const list = sortByQuality(out);
+    if (list.length) panCache.set(ck, { value: list, expires: Date.now() + PAN_CACHE_TTL });
+    return list;
+}
+
+export async function mipanSearch(keyword, origin) {
+    const q = String(keyword || '').trim();
+    if (!q) return [];
+    const bases = normalizeBases(origin, MIPAN_ORIGIN);
+    const settled = await Promise.allSettled(bases.map(base => mipanSearchOne(q, base)));
+    const lists = settled.filter(x => x.status === 'fulfilled').map(x => x.value);
+    if (!lists.length) {
+        const failed = settled.find(x => x.status === 'rejected');
+        throw (failed && failed.reason) || new Error('觅搜请求失败');
+    }
+    return mergeEngineLists(lists);
+}
+
 export function status(env) {
     return {
         name: 'makkah-media-nav',

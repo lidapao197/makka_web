@@ -5,13 +5,11 @@ const $ = sel => document.querySelector(sel);
 const ICON_STAR = '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.4l2.95 5.98 6.6.96-4.77 4.65 1.12 6.57L12 17.46l-5.9 3.1 1.12-6.57L2.45 9.34l6.6-.96L12 2.4Z"/></svg>';
 const ICON_X = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>';
 const ICON_EXT = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9"/><path d="M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></svg>';
-const ICON_BOOKMARK = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z"/></svg>';
-const ICON_BOOKMARK_ON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z"/></svg>';
 const state = {
   modules: [], quick: [], version: '', keyConfigured: false, moduleId: 'genreRank', params: {}, page: 1,
   searching: false, searchQuery: '', searchTimer: null,
   payload: null, currentItems: [], abort: null,
-  view: 'browse', favorites: [], modalItem: null
+  view: 'browse', panGroups: [], panActiveType: '', panSeq: 0
 };
 
 const KEY_STORAGE = 'makka-tmdb-key';
@@ -19,92 +17,6 @@ function getLocalKey() { try { return localStorage.getItem(KEY_STORAGE) || ''; }
 function setLocalKey(v) { try { v ? localStorage.setItem(KEY_STORAGE, v) : localStorage.removeItem(KEY_STORAGE); } catch (_) { /* 忽略 */ } }
 function apiHeaders() { const k = getLocalKey(); return k ? { 'X-TMDB-Key': k } : {}; }
 function hasAnyKey() { return state.keyConfigured || Boolean(getLocalKey()); }
-
-/* ---------------- 收藏存储层 ----------------
- * 运行时数据存于浏览器本地，本地 Express 与 Cloudflare Workers 共用同一份前端，
- * 两端均无需后端写接口。日后要跨设备同步时，只需替换本层的读写实现。 */
-const FAV_STORAGE = 'makka-favorites-v1';
-const FAV_FIELDS = [
-  'tmdbId', 'mediaType', 'title', 'genreTitle', 'description', 'releaseDate',
-  'subTitle', 'posterPath', 'backdropPath', 'rating', 'originCountry', 'originalLanguage'
-];
-
-function favId(m) {
-  if (m && typeof m.key === 'string' && m.key) return m.key;
-  const id = Number(m && (m.tmdbId || m.id));
-  const type = m && (m.mediaType === 'movie' || m.mediaType === 'tv') ? m.mediaType : 'other';
-  if (Number.isFinite(id) && id > 0) return `${type}:${id}`;
-  return `title:${String((m && m.title) || '').trim()}|${String((m && m.releaseDate) || '').slice(0, 4)}`;
-}
-function readFavorites() {
-  try {
-    const raw = JSON.parse(localStorage.getItem(FAV_STORAGE) || 'null');
-    const list = raw && Array.isArray(raw.items) ? raw.items : [];
-    return list.filter(x => x && typeof x === 'object' && typeof x.key === 'string' && typeof x.title === 'string');
-  } catch (_) { return []; }
-}
-function writeFavorites(list) {
-  try {
-    localStorage.setItem(FAV_STORAGE, JSON.stringify({ v: 1, items: list }));
-    return true;
-  } catch (_) {
-    showToast('收藏保存失败：浏览器存储空间不足或已被禁用');
-    return false;
-  }
-}
-function favSnapshot(m) {
-  const item = { key: favId(m), addedAt: Date.now() };
-  FAV_FIELDS.forEach(k => {
-    const v = m[k];
-    if (v !== undefined && v !== null && v !== '') item[k] = v;
-  });
-  return item;
-}
-function isFavorite(m) {
-  if (!m) return false;
-  const key = favId(m);
-  return state.favorites.some(x => x.key === key);
-}
-function toggleFavorite(m) {
-  if (!m || m.type === 'text') return false;
-  const key = favId(m);
-  const idx = state.favorites.findIndex(x => x.key === key);
-  const next = state.favorites.slice();
-  if (idx >= 0) next.splice(idx, 1);
-  else next.unshift(favSnapshot(m));
-  if (!writeFavorites(next)) return false;
-  state.favorites = next;
-  updateFavUI();
-  return idx < 0;
-}
-function favToggleLabel(btn, on) {
-  btn.innerHTML = (on ? ICON_BOOKMARK_ON : ICON_BOOKMARK) + (on ? '已收藏' : '加入收藏');
-  btn.classList.toggle('is-on', on);
-  btn.setAttribute('aria-pressed', String(on));
-}
-function updateFavUI() {
-  const badge = $('#favCount');
-  if (badge) badge.textContent = String(state.favorites.length);
-  const btn = $('#favBtn');
-  if (btn) {
-    const on = state.view === 'favorites';
-    btn.classList.toggle('is-active', on);
-    btn.setAttribute('aria-pressed', String(on));
-  }
-  document.querySelectorAll('.card[data-fav-key]').forEach(el => {
-    const on = state.favorites.some(x => x.key === el.dataset.favKey);
-    el.classList.toggle('is-fav', on);
-    const star = el.querySelector('.fav-star');
-    if (!star) return;
-    star.classList.toggle('is-on', on);
-    star.innerHTML = on ? ICON_BOOKMARK_ON : ICON_BOOKMARK;
-    star.setAttribute('aria-pressed', String(on));
-    star.title = on ? '取消收藏' : '加入收藏';
-    star.setAttribute('aria-label', on ? '取消收藏' : '加入收藏');
-  });
-  const toggle = $('#favToggle');
-  if (toggle) favToggleLabel(toggle, isFavorite(state.modalItem));
-}
 
 /* ---------------- 工具 ---------------- */
 function esc(v) {
@@ -154,8 +66,8 @@ function isVisible(p) {
 /* ---------------- 初始化 ---------------- */
 async function init() {
   bindStatic();
-  state.favorites = readFavorites();
-  updateFavUI();
+  state.engines = readEngineConfig();
+  renderPanEngines();
   let saved = 'dark';
   try { saved = localStorage.getItem('frame-theme') || 'dark'; } catch (_) { /* file:// 下可能不可用 */ }
   setTheme(saved);
@@ -192,8 +104,6 @@ function setSearchMode(on, q = '') {
 }
 
 function exitSearch(reload = true) {
-  const fromFavorites = state.view === 'favorites';
-  restoreBrowseUI();
   clearTimeout(state.searchTimer);
   const wasSearching = state.searching;
   state.searching = false;
@@ -202,13 +112,13 @@ function exitSearch(reload = true) {
   $('#search').value = '';
   syncSearch();
   setSearchMode(false);
-  if ((reload && wasSearching) || fromFavorites) load();
+  if (reload && wasSearching) load();
 }
 
 function applyModule(id, preset = {}) {
   const m = state.modules.find(x => x.id === id);
   if (!m) return;
-  restoreBrowseUI();
+  if (state.view === 'pan') setPanView(false);
   state.moduleId = id;
   const params = { ...m.defaults };
   Object.entries(preset).forEach(([k, v]) => {
@@ -230,11 +140,247 @@ function applyModule(id, preset = {}) {
 
 /* ---------------- 导航与筛选 ---------------- */
 function renderTabs() {
+  const panActive = state.view === 'pan';
   $('#tabs').innerHTML = state.modules.map(m => `
-    <button type="button" class="tab ${m.id === state.moduleId ? 'is-active' : ''}" data-module="${esc(m.id)}"
-            role="tab" aria-selected="${m.id === state.moduleId}" title="${esc(m.originTitle)}">
+    <button type="button" class="tab ${m.id === state.moduleId && !panActive ? 'is-active' : ''}" data-module="${esc(m.id)}"
+            role="tab" aria-selected="${m.id === state.moduleId && !panActive}" title="${esc(m.originTitle)}">
       <strong>${esc(m.label)}${(m.version || state.version) ? `<em class="tab-version">v${esc(m.version || state.version)}</em>` : ''}</strong><small>${esc(m.desc)}</small>
+    </button>`).join('') + `
+    <button type="button" class="tab ${panActive ? 'is-active' : ''}" data-pan-view="1"
+            role="tab" aria-selected="${panActive}" title="网盘搜索：盘搜 / 觅搜">
+      <strong>网盘搜索</strong><small>盘搜 · 觅搜</small>
+    </button>`;
+}
+
+/* ---------------- 网盘搜索 ---------------- */
+const ENGINE_STORAGE = 'makka-engines-v1';
+const ENGINE_DEFAULTS = {
+  pan: ['https://so.252035.xyz'],
+  mipan: ['https://www.mipan.so'],
+  customs: []
+};
+
+function normalizeBaseList(value, fallback) {
+  const list = Array.isArray(value) ? value : (typeof value === 'string' ? [value] : []);
+  const out = list.map(x => String(x || '').trim()).filter(Boolean).slice(0, 5);
+  return out.length ? out : fallback.slice();
+}
+
+function readEngineConfig() {
+  const cfg = {
+    pan: ENGINE_DEFAULTS.pan.slice(),
+    mipan: ENGINE_DEFAULTS.mipan.slice(),
+    customs: []
+  };
+  try {
+    const raw = JSON.parse(localStorage.getItem(ENGINE_STORAGE) || 'null');
+    if (raw && typeof raw === 'object') {
+      cfg.pan = normalizeBaseList(raw.pan, cfg.pan);
+      cfg.mipan = normalizeBaseList(raw.mipan, cfg.mipan);
+      if (Array.isArray(raw.customs)) {
+        cfg.customs = raw.customs
+          .filter(x => x && typeof x.name === 'string' && typeof x.base === 'string')
+          .map(x => ({ name: x.name.trim().slice(0, 20), base: x.base.trim() }))
+          .filter(x => x.name && x.base)
+          .slice(0, 8);
+      }
+    }
+  } catch (_) { /* 使用默认配置 */ }
+  return cfg;
+}
+
+function writeEngineConfig(cfg) {
+  try {
+    localStorage.setItem(ENGINE_STORAGE, JSON.stringify(cfg));
+    return true;
+  } catch (_) {
+    showToast('设置保存失败：浏览器存储不可用');
+    return false;
+  }
+}
+
+function currentEngines() { return state.engines || readEngineConfig(); }
+
+function engineList() {
+  const cfg = currentEngines();
+  return [
+    { id: 'pan', label: '盘搜', bases: cfg.pan },
+    { id: 'mipan', label: '觅搜', bases: cfg.mipan },
+    ...cfg.customs.map((c, i) => ({ id: 'custom:' + i, label: c.name, bases: [c.base] }))
+  ];
+}
+
+function renderPanEngines() {
+  $('#panEngines').innerHTML = engineList().map((e, i) => `
+    <button type="button" class="pan-engine ${i === 0 ? '' : 'pan-engine--alt'}" data-pan-engine="${esc(e.id)}">${esc(e.label)}</button>`).join('');
+}
+
+function engineRowsHtml(customs) {
+  if (!customs.length) return '<p class="engine-empty">还没有自定义模块，点下方按钮添加。</p>';
+  return customs.map(c => `
+    <div class="engine-row">
+      <input type="text" name="customName" maxlength="20" placeholder="模块名称" value="${esc(c.name)}">
+      <input type="url" name="customBase" placeholder="https://example.com" value="${esc(c.base)}">
+      <button type="button" class="engine-del" data-engine-del aria-label="删除模块">×</button>
+    </div>`).join('');
+}
+
+function baseRowsHtml(bases) {
+  const list = bases && bases.length ? bases : [''];
+  return list.map(v => `
+    <div class="engine-row">
+      <input type="url" data-base placeholder="https://example.com" value="${esc(v)}">
+      <button type="button" class="engine-del" data-base-del aria-label="删除地址">×</button>
+    </div>`).join('');
+}
+
+function openSettingsModal() {
+  const cfg = currentEngines();
+  openModal(`
+    <div class="info-body">
+      <span class="eyebrow">Settings</span>
+      <h2>搜索设置</h2>
+      <p>盘搜、觅搜可以各配多个地址，搜索时会并发请求并合并结果；也可以添加自定义模块。设置只保存在当前浏览器，地址必须是 https 且不能是内网地址。</p>
+      <form id="engineForm" class="submit-form">
+        <div class="engine-group">
+          <div class="engine-customs-head">盘搜地址</div>
+          <div id="panBaseList">${baseRowsHtml(cfg.pan)}</div>
+          <button type="button" class="reset-btn" id="panAddBtn">+ 添加地址</button>
+        </div>
+        <div class="engine-group">
+          <div class="engine-customs-head">觅搜地址</div>
+          <div id="mipanBaseList">${baseRowsHtml(cfg.mipan)}</div>
+          <button type="button" class="reset-btn" id="mipanAddBtn">+ 添加地址</button>
+        </div>
+        <div class="engine-customs">
+          <div class="engine-customs-head">自定义搜索模块（盘搜协议）</div>
+          <div id="engineCustomList">${engineRowsHtml(cfg.customs)}</div>
+          <button type="button" class="reset-btn" id="engineAddBtn">+ 添加模块</button>
+        </div>
+        <div class="submit-actions">
+          <button class="btn-primary" type="submit">保存</button>
+          <button type="button" class="reset-btn" id="engineResetBtn">恢复默认</button>
+          <button type="button" class="reset-btn" data-close>取消</button>
+        </div>
+      </form>
+    </div>`);
+}
+
+function collectEngineConfig(form) {
+  const readBases = id => {
+    const box = form.querySelector('#' + id);
+    if (!box) return [];
+    return Array.from(box.querySelectorAll('input[data-base]'))
+      .map(x => String(x.value || '').trim())
+      .filter(Boolean)
+      .slice(0, 5);
+  };
+  const customs = [];
+  const customBox = form.querySelector('#engineCustomList');
+  if (customBox) {
+    customBox.querySelectorAll('.engine-row').forEach(row => {
+      const nameEl = row.querySelector('input[name="customName"]');
+      const baseEl = row.querySelector('input[name="customBase"]');
+      const name = nameEl ? String(nameEl.value || '').trim() : '';
+      const base = baseEl ? String(baseEl.value || '').trim() : '';
+      if (name && base) customs.push({ name: name.slice(0, 20), base });
+    });
+  }
+  const pan = readBases('panBaseList');
+  const mipan = readBases('mipanBaseList');
+  return {
+    pan: pan.length ? pan : ENGINE_DEFAULTS.pan.slice(),
+    mipan: mipan.length ? mipan : ENGINE_DEFAULTS.mipan.slice(),
+    customs: customs.slice(0, 8)
+  };
+}
+
+function setPanView(on) {
+  if (on && state.searching) exitSearch(false);
+  state.view = on ? 'pan' : 'browse';
+  $('#panWrap').hidden = !on;
+  document.querySelector('.library').hidden = on;
+  $('#quickRow').hidden = on || state.searching;
+  $('#filterWrap').hidden = on || state.searching;
+  renderTabs();
+  if (on) $('#panInput').focus();
+}
+
+function groupPan(list) {
+  const map = new Map();
+  list.forEach(x => {
+    const type = String(x.type || 'other');
+    if (!map.has(type)) map.set(type, { type, label: String(x.label || type), items: [] });
+    map.get(type).items.push(x);
+  });
+  return Array.from(map.values());
+}
+
+function renderPanTypes() {
+  $('#panTypes').innerHTML = state.panGroups.map(g => `
+    <button type="button" class="pan-tab ${g.type === state.panActiveType ? 'is-active' : ''}" data-pan-type="${esc(g.type)}">
+      ${esc(g.label)}<span>${g.items.length}</span>
     </button>`).join('');
+  $('#panTypes').hidden = !state.panGroups.length;
+}
+
+function renderPanItems() {
+  const g = state.panGroups.find(x => x.type === state.panActiveType) || state.panGroups[0];
+  if (!g) { $('#panResults').innerHTML = ''; return; }
+  $('#panResults').innerHTML = g.items.map(x => {
+    const pass = String(x.password || '').trim();
+    const tags = (x.qualityTags || []).slice(0, 2);
+    return `<a class="pan-item" href="${esc(x.url || '#')}" target="_blank" rel="noopener noreferrer"${pass ? ` data-pass="${esc(pass)}"` : ''} title="${esc(pass ? `提取码 ${pass}，点击复制并打开` : (x.title || ''))}">
+      <span class="pan-item-title">${esc(x.title || '未命名资源')}</span>
+      <span class="pan-item-meta">
+        ${tags.map(t => `<em>${esc(t)}</em>`).join('')}
+        ${pass ? `<em class="pan-pass">提取码 ${esc(pass)}</em>` : ''}
+        ${x.datetime ? `<i>${esc(x.datetime)}</i>` : ''}
+      </span>
+    </a>`;
+  }).join('');
+}
+
+async function panSearch(engineId) {
+  const engine = engineList().find(x => x.id === engineId);
+  if (!engine) return;
+  const name = engine.label;
+  const endpoint = engineId === 'mipan' ? '/api/mipan/search' : '/api/pan/search';
+  const q = String($('#panInput').value || '').trim();
+  if (!q) { showToast('先输入片名或关键词'); $('#panInput').focus(); return; }
+  const seq = ++state.panSeq;
+  const buttons = Array.from(document.querySelectorAll('[data-pan-engine]'));
+  buttons.forEach(b => { b.disabled = true; });
+  $('#panHint').textContent = `「${q}」${name}中…`;
+  $('#panTypes').hidden = true;
+  $('#panTypes').innerHTML = '';
+  $('#panResults').innerHTML = '<div class="pan-empty">正在搜索…</div>';
+  try {
+    const params = new URLSearchParams({ q });
+    engine.bases.forEach(base => params.append('url', base));
+    const res = await fetch(`${endpoint}?${params.toString()}`);
+    const data = await res.json();
+    if (seq !== state.panSeq) return;
+    if (!data.ok) throw new Error(data.error || '搜索失败');
+    const list = Array.isArray(data.list) ? data.list : [];
+    if (!list.length) {
+      state.panGroups = [];
+      $('#panResults').innerHTML = `<div class="pan-empty">「${esc(q)}」没有搜到${esc(name)}资源，换个关键词或换另一个引擎试试。</div>`;
+      $('#panHint').textContent = `「${q}」· ${name} 无结果`;
+      return;
+    }
+    state.panGroups = groupPan(list);
+    state.panActiveType = state.panGroups[0].type;
+    renderPanTypes();
+    renderPanItems();
+    $('#panHint').textContent = `「${q}」· ${name} ${list.length} 条 · ${state.panGroups.length} 个网盘`;
+  } catch (e) {
+    if (seq !== state.panSeq) return;
+    $('#panResults').innerHTML = `<div class="pan-empty">${esc(name)}失败：${esc(e.message)}</div>`;
+    $('#panHint').textContent = '';
+  } finally {
+    if (seq === state.panSeq) buttons.forEach(b => { b.disabled = false; });
+  }
 }
 
 function renderQuick() {
@@ -280,7 +426,6 @@ function queryParams() {
 
 /* ---------------- 数据加载 ---------------- */
 async function load() {
-  if (state.view === 'favorites') return;
   if (state.abort) state.abort.abort();
   state.abort = new AbortController();
   showLoading();
@@ -351,13 +496,10 @@ function renderGrid() {
 
 function cardHtml(m, idx, i) {
   const cover = imgFor(m.posterPath);
-  const key = favId(m);
-  const on = isFavorite(m);
-  return `<article class="card ${on ? 'is-fav' : ''}" data-index="${idx}" data-fav-key="${esc(key)}" tabindex="0" role="button" aria-label="查看《${esc(m.title)}》详情" style="--i:${Math.min(i, 14)}">
+  return `<article class="card" data-index="${idx}" tabindex="0" role="button" aria-label="查看《${esc(m.title)}》详情" style="--i:${Math.min(i, 14)}">
     <div class="poster">
       <div class="poster-fallback">${esc(String(m.title || '影').slice(0, 1))}</div>
       ${cover ? `<img src="${esc(cover)}" alt="${esc(m.title)} 海报" loading="lazy">` : ''}
-      <button type="button" class="fav-star ${on ? 'is-on' : ''}" data-fav-toggle aria-pressed="${on}" title="${on ? '取消收藏' : '加入收藏'}" aria-label="${on ? '取消收藏' : '加入收藏'}">${on ? ICON_BOOKMARK_ON : ICON_BOOKMARK}</button>
     </div>
     <div class="card-body">
       <h3 class="card-title" title="${esc(m.title)}">${esc(m.title)}</h3>
@@ -374,104 +516,6 @@ function renderPager() {
     <button type="button" class="page-btn" data-page="next" ${hasMore ? '' : 'disabled'}>下一页 →</button>`;
 }
 
-/* ---------------- 我的收藏 ---------------- */
-function showFavoritesView() {
-  state.view = 'favorites';
-  if (state.abort) { state.abort.abort(); state.abort = null; }
-  state.searching = false;
-  state.searchQuery = '';
-  $('#search').value = '';
-  syncSearch();
-  document.querySelector('.browse').hidden = true;
-  $('#filterWrap').hidden = true;
-  $('#favToolbar').hidden = false;
-  $('#libraryTitle').textContent = '我的收藏';
-  $('#libraryNote').textContent = `共 ${state.favorites.length} 部 · 保存在当前浏览器`;
-  $('#pager').innerHTML = '';
-  $('#resultMeta').innerHTML = `我的收藏：<strong>${state.favorites.length} 部影片</strong>`;
-  const grid = $('#grid');
-  grid.classList.remove('is-loading');
-  if (!state.favorites.length) {
-    grid.classList.add('is-empty');
-    grid.innerHTML = '<div class="empty"><h3>还没有收藏影片</h3><p>点击卡片右上角的书签，或在详情弹层里点「加入收藏」。</p><button type="button" id="favBackBtn">去浏览影片</button></div>';
-    updateFavUI();
-    return;
-  }
-  grid.classList.remove('is-empty');
-  state.currentItems = state.favorites.slice();
-  grid.innerHTML = state.favorites.map((m, i) => cardHtml(m, i, i)).join('');
-  updateFavUI();
-}
-
-function restoreBrowseUI() {
-  if (state.view !== 'favorites') return;
-  state.view = 'browse';
-  document.querySelector('.browse').hidden = false;
-  $('#favToolbar').hidden = true;
-  setSearchMode(false);
-  updateFavUI();
-}
-
-function toggleFavoritesView() {
-  if (state.view === 'favorites') { restoreBrowseUI(); load(); return; }
-  showFavoritesView();
-}
-
-function exportFavorites() {
-  const data = { v: 1, exportedAt: new Date().toISOString(), items: state.favorites };
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `makka-favorites-${new Date().toISOString().slice(0, 10)}.json`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-  showToast('已导出收藏备份');
-}
-
-function importFavorites(file) {
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = () => {
-    try {
-      const raw = JSON.parse(String(reader.result || ''));
-      const list = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.items) ? raw.items : null);
-      if (!list) throw new Error('bad format');
-      const clean = list
-        .filter(x => x && typeof x === 'object' && typeof x.title === 'string')
-        .map(x => {
-          const item = { key: String(x.key || favId(x)), addedAt: Number(x.addedAt) || Date.now() };
-          FAV_FIELDS.forEach(k => {
-            if (x[k] !== undefined && x[k] !== null && x[k] !== '') item[k] = x[k];
-          });
-          return item;
-        });
-      const map = new Map(state.favorites.map(x => [x.key, x]));
-      clean.forEach(x => { if (!map.has(x.key)) map.set(x.key, x); });
-      const merged = [...map.values()].sort((a, b) => b.addedAt - a.addedAt);
-      if (!writeFavorites(merged)) return;
-      state.favorites = merged;
-      showFavoritesView();
-      showToast(`导入完成，当前共 ${merged.length} 部收藏`);
-    } catch (_) {
-      showToast('导入失败：不是有效的收藏 JSON 文件');
-    }
-  };
-  reader.onerror = () => showToast('读取文件失败');
-  reader.readAsText(file);
-}
-
-function clearFavorites() {
-  if (!state.favorites.length) { showToast('收藏已经是空的'); return; }
-  if (!window.confirm(`确定清空全部 ${state.favorites.length} 部收藏？此操作不可撤销，建议先导出备份。`)) return;
-  if (!writeFavorites([])) return;
-  state.favorites = [];
-  showFavoritesView();
-  showToast('已清空收藏');
-}
-
 /* ---------------- 弹层 ---------------- */
 function openModal(html, wide = false) {
   const card = $('#modalCard');
@@ -483,7 +527,6 @@ function openModal(html, wide = false) {
 function closeModal() {
   $('#modal').classList.remove('is-open');
   document.body.classList.remove('no-scroll');
-  state.modalItem = null;
 }
 function tmdbLink(m) {
   const id = Number(m.tmdbId || m.id);
@@ -503,17 +546,12 @@ function openDetail(m) {
         <span class="eyebrow">Movie Detail</span>
         <h2>${esc(m.title)}</h2>
         <div class="detail-meta">${ratingHtml(m.rating)}<span>${esc(yearOf(m))}</span></div>
-        ${(tags.length || detailUrl) ? `<div class="cover-tags">${tags.map(t => `<span class="cover-tag">${esc(t)}</span>`).join('')}${detailUrl ? `<a class="cover-tag cover-tag--link" href="${esc(detailUrl)}" target="_blank" rel="noopener noreferrer" aria-label="在 TMDB 查看影片详情">TMDB ${ICON_EXT}</a>` : ''}</div>` : ''}
+        <div class="cover-tags">${tags.map(t => `<span class="cover-tag">${esc(t)}</span>`).join('')}${detailUrl ? `<a class="cover-tag cover-tag--link" href="${esc(detailUrl)}" target="_blank" rel="noopener noreferrer" aria-label="在 TMDB 查看影片详情">TMDB ${ICON_EXT}</a>` : ''}</div>
       </div>
     </div>
     <div class="modal-body">
-      <div class="detail-actions">
-        <button type="button" class="btn-fav" id="favToggle" aria-pressed="false"></button>
-      </div>
       <p class="detail-desc">${esc(m.description || '暂无简介。')}</p>
     </div>`, true);
-  state.modalItem = m;
-  favToggleLabel($('#favToggle'), isFavorite(m));
 }
 
 function openKeyModal() {
@@ -550,7 +588,6 @@ function openAbout() {
         <li>请求失败时页面显示错误原因并提供重试（顶部徽章可查看状态）</li>
         <li>快捷榜单来自 <code>lib/ptjc.js</code>，点击可直接切换到对应筛选组合</li>
         <li>网站不含播放器，卡片仅用于展示影片信息</li>
-        <li>收藏只保存影片元数据于当前浏览器，支持导出 / 导入 JSON 备份与迁移</li>
       </ul>
       <div class="info-status" style="margin-top:22px">当前状态 <span id="aboutStatus"></span></div>
     </div>
@@ -581,15 +618,6 @@ function syncSearch() {
 
 /* ---------------- 事件绑定 ---------------- */
 function bindStatic() {
-  $('#favBtn').addEventListener('click', toggleFavoritesView);
-  $('#favExport').addEventListener('click', exportFavorites);
-  $('#favImport').addEventListener('click', () => $('#favFile').click());
-  $('#favFile').addEventListener('change', e => {
-    const file = e.target.files && e.target.files[0];
-    importFavorites(file);
-    e.target.value = '';
-  });
-  $('#favClear').addEventListener('click', clearFavorites);
   $('#themeBtn').addEventListener('click', () => {
     setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
   });
@@ -604,7 +632,6 @@ function bindStatic() {
     clearTimeout(state.searchTimer);
     const v = $('#search').value.trim();
     if (!v) { exitSearch(); return; }
-    restoreBrowseUI();
     state.searching = true;
     state.searchQuery = v;
     state.page = 1;
@@ -625,6 +652,7 @@ function bindStatic() {
   });
 
   $('#tabs').addEventListener('click', e => {
+    if (e.target.closest('[data-pan-view]')) { setPanView(true); return; }
     const tab = e.target.closest('[data-module]');
     if (tab) applyModule(tab.dataset.module);
   });
@@ -633,6 +661,31 @@ function bindStatic() {
     if (!chip) return;
     const q = state.quick[Number(chip.dataset.quick)];
     if (q) { applyModule(q.module, q.params); showToast(`已切换到「${q.label}」`); }
+  });
+
+  $('#panEngines').addEventListener('click', e => {
+    const btn = e.target.closest('[data-pan-engine]');
+    if (btn && !btn.disabled) panSearch(btn.dataset.panEngine);
+  });
+  $('#settingsBtn').addEventListener('click', openSettingsModal);
+  $('#panInput').addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    panSearch('pan');
+  });
+  $('#panTypes').addEventListener('click', e => {
+    const t = e.target.closest('[data-pan-type]');
+    if (!t) return;
+    state.panActiveType = t.dataset.panType;
+    renderPanTypes();
+    renderPanItems();
+  });
+  $('#panResults').addEventListener('click', e => {
+    const a = e.target.closest('.pan-item[data-pass]');
+    if (!a || !navigator.clipboard) return;
+    navigator.clipboard.writeText(a.dataset.pass)
+      .then(() => showToast(`提取码 ${a.dataset.pass} 已复制`))
+      .catch(() => {});
   });
 
   $('#filterGrid').addEventListener('click', e => {
@@ -649,18 +702,6 @@ function bindStatic() {
   });
 
   $('#grid').addEventListener('click', e => {
-    if (e.target.closest('#favBackBtn')) { restoreBrowseUI(); load(); return; }
-    const star = e.target.closest('[data-fav-toggle]');
-    if (star) {
-      const card = star.closest('.card');
-      const m = card && state.currentItems[Number(card.dataset.index)];
-      if (m) {
-        const on = toggleFavorite(m);
-        showToast(on ? `已收藏《${m.title}》` : `已取消收藏《${m.title}》`);
-        if (state.view === 'favorites') showFavoritesView();
-      }
-      return;
-    }
     if (e.target.closest('#retryLoad')) { load(); return; }
     const reset = e.target.closest('#emptyReset, #noticeReset');
     if (reset) { applyModule(state.moduleId); return; }
@@ -669,7 +710,6 @@ function bindStatic() {
   });
   $('#grid').addEventListener('keydown', e => {
     if (e.key !== 'Enter' && e.key !== ' ') return;
-    if (e.target.closest('[data-fav-toggle]')) return;
     const card = e.target.closest('.card');
     if (card) { e.preventDefault(); openDetail(state.currentItems[Number(card.dataset.index)]); }
   });
@@ -683,15 +723,6 @@ function bindStatic() {
   });
 
   $('#modal').addEventListener('click', e => {
-    if (e.target.closest('#favToggle')) {
-      const m = state.modalItem;
-      if (m) {
-        const on = toggleFavorite(m);
-        showToast(on ? `已收藏《${m.title}》` : `已取消收藏《${m.title}》`);
-        if (state.view === 'favorites' && !on) { closeModal(); showFavoritesView(); }
-      }
-      return;
-    }
     if (e.target.closest('#clearKey')) {
       setLocalKey('');
       closeModal();
@@ -699,17 +730,78 @@ function bindStatic() {
       load();
       return;
     }
+    if (e.target.closest('#panAddBtn') || e.target.closest('#mipanAddBtn')) {
+      const isPan = Boolean(e.target.closest('#panAddBtn'));
+      const list = $(isPan ? '#panBaseList' : '#mipanBaseList');
+      if (!list) return;
+      if (list.querySelectorAll('.engine-row').length >= 5) { showToast('每类最多 5 个地址'); return; }
+      list.insertAdjacentHTML('beforeend', baseRowsHtml(['']));
+      const rows = list.querySelectorAll('.engine-row');
+      const lastInput = rows[rows.length - 1] && rows[rows.length - 1].querySelector('input[data-base]');
+      if (lastInput) lastInput.focus();
+      return;
+    }
+    const delBase = e.target.closest('[data-base-del]');
+    if (delBase) {
+      const row = delBase.closest('.engine-row');
+      const list = row && row.parentElement;
+      if (row) row.remove();
+      if (list && !list.querySelector('.engine-row')) list.innerHTML = baseRowsHtml(['']);
+      return;
+    }
+    if (e.target.closest('#engineAddBtn')) {
+      const list = $('#engineCustomList');
+      if (!list) return;
+      if (list.querySelectorAll('.engine-row').length >= 8) { showToast('最多添加 8 个自定义模块'); return; }
+      const empty = list.querySelector('.engine-empty');
+      if (empty) empty.remove();
+      list.insertAdjacentHTML('beforeend', engineRowsHtml([{ name: '', base: '' }]));
+      const rows = list.querySelectorAll('.engine-row');
+      const last = rows[rows.length - 1];
+      const input = last && last.querySelector('input[name="customName"]');
+      if (input) input.focus();
+      return;
+    }
+    const del = e.target.closest('[data-engine-del]');
+    if (del) {
+      const row = del.closest('.engine-row');
+      if (row) row.remove();
+      const list = $('#engineCustomList');
+      if (list && !list.querySelector('.engine-row')) list.innerHTML = engineRowsHtml([]);
+      return;
+    }
+    if (e.target.closest('#engineResetBtn')) {
+      const panList = $('#panBaseList');
+      const mipanList = $('#mipanBaseList');
+      if (panList) panList.innerHTML = baseRowsHtml(ENGINE_DEFAULTS.pan);
+      if (mipanList) mipanList.innerHTML = baseRowsHtml(ENGINE_DEFAULTS.mipan);
+      const list = $('#engineCustomList');
+      if (list) list.innerHTML = engineRowsHtml([]);
+      showToast('已恢复默认地址，记得点保存');
+      return;
+    }
     if (e.target === $('#modal') || e.target.closest('[data-close]')) closeModal();
   });
   $('#modal').addEventListener('submit', e => {
-    if (e.target.id !== 'keyForm') return;
-    e.preventDefault();
-    const v = String(new FormData(e.target).get('key') || '').trim();
-    if (!v) return;
-    setLocalKey(v);
-    closeModal();
-    showToast('Key 已保存，正在重新加载…');
-    load();
+    if (e.target.id === 'keyForm') {
+      e.preventDefault();
+      const v = String(new FormData(e.target).get('key') || '').trim();
+      if (!v) return;
+      setLocalKey(v);
+      closeModal();
+      showToast('Key 已保存，正在重新加载…');
+      load();
+      return;
+    }
+    if (e.target.id === 'engineForm') {
+      e.preventDefault();
+      const cfg = collectEngineConfig(e.target);
+      if (!writeEngineConfig(cfg)) return;
+      state.engines = cfg;
+      renderPanEngines();
+      closeModal();
+      showToast('搜索设置已保存');
+    }
   });
 
   document.addEventListener('keydown', e => {

@@ -1,6 +1,6 @@
 # Makkah导航 (makka-media-hub)
 
-现代、极简的影视资源聚合导航站。只做信息展示与第三方跳转，不存储、不播放任何视频内容；收藏功能仅把影片元数据保存在用户浏览器中。
+现代、极简的影视资源聚合导航站。只做信息展示与第三方跳转，不存储、不播放任何视频内容。
 
 > **参考来源**：<https://github.com/MakkaPakka518/testwidget>（ForwardWidget / rex 测试模块）。
 > 项目 `lib/` 下的历史 Widget 脚本、栏目定义、筛选器与类型/地区映射均源自该仓库；本站服务端以 `vm` 沙箱解析它们，未改动原始文件。
@@ -18,15 +18,22 @@
 
 ### 环境要求
 
-- Node.js 20.18.1 或更高（`undici` 7 的要求）
+- Node.js 20.18.1 或更高（`undici` 7 的要求）；用 `.env` 启动（`npm run start:env` / `run.bat`）需 **22.9+**（`--env-file-if-exists`）
 - 首次运行会安装依赖（express、undici、cheerio、winston 等）
 
 ### 启动
 
 ```bat
 npm start
-:: 或双击 run.bat
 ```
+
+带 `.env` 启动（推荐，Key 与代理一次配好）：
+
+```bat
+npm run start:env
+```
+
+也可以双击 `run.bat`，它同样读取 `.env`（Node 22.9+，文件不存在时自动忽略）。
 
 自定义端口（PowerShell）：
 
@@ -40,9 +47,23 @@ $env:PORT=3011; npm start
 |---|---|---|
 | `TMDB_API_KEY` | 是 | TMDB API Key，在 Cloudflare Pages → Settings → Environment variables 配置为加密 Secret |
 | `TMDB_LANGUAGE` | 否 | 默认 `zh-CN` |
-| `TMDB_PROXY_URL` | 否 | 本地开发用的代理（如 `http://127.0.0.1:7897`）；Cloudflare 上留空直连即可 |
+| `TMDB_PROXY_URL` | 否 | 本地开发用的代理（如 `http://127.0.0.1:7897`）；Cloudflare 上留空直连即可，盘搜引擎也走它 |
+| `PAN_API_BASE` | 否 | 盘搜引擎地址，默认 `https://so.252035.xyz`（仅本地 Express 读取） |
 
-本地启动示例：
+本地推荐用 `.env`（已被 `.gitignore` 忽略，不会进仓库）：
+
+```ini
+TMDB_API_KEY=<你的 Key>
+TMDB_PROXY_URL=http://127.0.0.1:7897
+TMDB_LANGUAGE=zh-CN
+```
+
+```powershell
+Copy-Item .env.example .env   # 首次：复制模板后填入 Key
+npm run start:env             # 读取 .env 启动
+```
+
+也可以临时导出（只对当前窗口有效）：
 
 ```powershell
 $env:TMDB_API_KEY="<你的 Key>"; $env:TMDB_PROXY_URL="http://127.0.0.1:7897"; npm start
@@ -58,12 +79,12 @@ $env:TMDB_API_KEY="<你的 Key>"; $env:TMDB_PROXY_URL="http://127.0.0.1:7897"; n
 |---|---|
 | 顶部导航 | Logo / favicon、TMDB 全站搜索、数据状态徽章、日夜间切换、关于 |
 | 栏目按钮 | 番剧 · 全球影剧 · 平台片库，各显示对应归属的 `WidgetMetadata.version` |
+| 网盘搜索 | 栏目栏最右侧，点开后输入关键词，用「盘搜」或「觅搜」检索网盘资源，结果按网盘分组 |
 | 快捷榜单 | 5 个预设入口，来自 `lib/ptjc.js` 的剧场/榜单模块 |
 | 筛选栏 | 类型 / 地区 / 年份 / 排序等胶囊选项，支持 `belongTo` 级联；两项排序默认「最新」 |
 | 卡片网格 | 桌面 6→2 列响应式，竖版海报 + 片名 + 上映时间，点击弹出详情 |
 | 详情弹层 | 780px 宽屏，横版海报主视觉，片名下方按可用字段显示地区 / 类型 / 题材 / 语言标签，标签末尾为 TMDB 跳转按钮 + 简介 |
 | 分页 | 基于接口 `hasMore`，搜索与浏览共用 |
-| 我的收藏 | 卡片书签 / 详情弹层加入收藏，顶部入口查看列表，支持导出、导入、清空 JSON 备份 |
 
 ---
 
@@ -103,6 +124,8 @@ makka_web/
 | `GET /api/modules` | 栏目、筛选器、快捷榜单、类型映射与 `version` |
 | `GET /api/data?module=<id>&<参数>&page=1` | 栏目数据，返回 `{module, items, source, page, hasMore, note}` |
 | `GET /api/search?q=<关键词>&page=1` | TMDB `search/multi` 全站搜索 |
+| `GET /api/pan/search?q=<关键词>` | 盘搜：聚合引擎结果，按网盘分组，含画质标签与提取码 |
+| `GET /api/mipan/search?q=<关键词>` | 觅搜：token 鉴权的第二个聚合引擎 |
 | `GET /api/img?url=<编码后的图片地址>` | 图片代理：域名白名单 + 按源站附加防盗链 Referer |
 | `GET /api/status` | 运行状态：版本、Key / 代理配置、超时、缓存条目（本地与 Worker 均提供） |
 
@@ -112,18 +135,10 @@ makka_web/
 
 1. `lib/catalog.js` 在 `vm` 沙箱中读取两份历史脚本，提取 `WidgetMetadata`、`GLOBAL_GENRE_MAP_ALL`、`ADVANCED_GENRE_MAP`、`REGION_MAP`，规范化为 3 个栏目；展示层的排序默认值偏好在 catalog 内覆盖，不改动母本。
 2. 卡片沿用历史 `buildItem` 契约：`id / tmdbId / mediaType / title / genreTitle / description / releaseDate / subTitle / posterPath / backdropPath / rating`，并补充 `originCountry / originalLanguage` 供详情标签使用。
-3. 上游请求分两套运行时：本地 Express 走 `upstreamFetch()`，仅在设置 `TMDB_PROXY_URL` 时给 `tmdb.org` / `themoviedb.org` 挂 `undici.ProxyAgent`（超时 15 秒）；Cloudflare Worker 走原生 `fetch` 直连（超时 12 秒），不需要代理。两者返回相同的卡片契约。
+3. 上游请求分两套运行时：本地 Express 走 `upstreamFetch()`，仅在设置 `TMDB_PROXY_URL` 时给 `tmdb.org` / `themoviedb.org` / `252035.xyz`（盘搜）挂 `undici.ProxyAgent`（超时 15 秒）；Cloudflare Worker 走原生 `fetch` 直连（超时 12 秒），不需要代理。觅搜域名本地可直连。两者返回相同的卡片契约。
 4. 请求失败时返回一张 `type: 'text'` 提示卡片，页面显示失败原因并提供「重试」按钮，顶部徽章变红显示「请求失败」；不再保留任何离线兜底内容。成功结果缓存 5 分钟，失败结果不缓存以便重试。
 5. 封面一律经 `/api/img` 代理，浏览器不直接访问 TMDB CDN；本地与 Worker 各有白名单 + 防盗链实现。
 6. Worker 运行时没有 `fs` / `vm`，栏目、筛选器、映射表与版本由 `npm run build` 在构建期解析 `lib/*.js` 后固化为 `worker/_meta.js`；本地 Express 仍在运行时用 `vm` 解析同一份历史脚本。
-
-### 收藏数据
-
-- **存储位置**：浏览器 `localStorage`，键名 `makka-favorites-v1`，结构 `{v:1, items:[...]}`。本地 Express 与 Cloudflare Workers 共用同一份 `public/js/app.js`，两端都不需要新增后端接口或持久化绑定；改动前端后线上随 Workers Builds 部署生效。
-- **去重主键**：`mediaType:tmdbId`；缺少 `tmdbId` 时回退 `title|年份`。每条只保存渲染卡片与详情所需的元数据快照（片名、海报、评分、简介、地区等）与 `addedAt`，不保存视频内容。
-- **离线可用**：海报继续走 `/api/img` 代理（该接口不校验 TMDB Key），收藏列表无需重新请求 TMDB，未配置 Key 或上游不可达时仍可查看已收藏条目。
-- **隔离与备份**：数据按浏览器 + 域名隔离，`localhost:3010` 与线上域名互不相通；换设备、无痕模式或清理浏览器数据会丢失。收藏页提供导出 / 导入 JSON，可用于备份与迁移，也可把导出的文件提交到仓库留档。
-- **跨设备演进**：若日后需要多设备同步，替换 `app.js` 中的收藏存储层即可 —— 新增 `/api/favorites` 读写，Worker 侧接 KV / D1（`wrangler.jsonc` 增加绑定），Express 侧落本地文件，前端以匿名 ID 区分用户；卡片与视图层无需改动。
 
 ---
 
@@ -146,7 +161,8 @@ makka_web/
 | 徽章显示「请先输入TMDB的KEY」 | 服务端未设 `TMDB_API_KEY`；点击徽章在弹窗输入并保存在浏览器，或到 CF 后台配置环境变量 |
 | 徽章显示「请求失败」 | TMDB 不可达 / 超时 / Key 无效；页面显示失败原因与「重试」按钮，本地检查 `TMDB_PROXY_URL` |
 | 改了 `lib/catalog.js` / `server.js` 没生效 | 后端代码不热重载，需重启服务；前端文件刷新即可 |
-| 换浏览器 / 换设备后收藏不见了 | 收藏按浏览器与域名隔离；先在原浏览器「我的收藏 → 导出 JSON」，再到新环境「导入 JSON」 |
+| 盘搜提示超时 | 盘搜引擎 `so.252035.xyz` 在本机直连被阻断，需设置 `TMDB_PROXY_URL`；Cloudflare 上由平台出口直连 |
+| 觅搜提示 token 失败 | 上游鉴权服务临时不可用，稍后重试或改用盘搜 |
 | 双击 `run.bat` 一闪而退 | 该文件必须保持 GBK 编码 + CRLF 换行 |
 
 ---

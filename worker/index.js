@@ -2,7 +2,7 @@
 import { META } from './_meta.js';
 import {
     IMG_ALLOWED_HOSTS, imgRefererFor, json, keyConfigured, requestKey,
-    hasModule, getData, search, status
+    hasModule, getData, search, panSearch, mipanSearch, status
 } from './_shared.js';
 
 async function handleImg(url) {
@@ -89,6 +89,19 @@ export default {
                 } catch (e) {
                     return json({ error: '搜索失败', message: e.message }, 500);
                 }
+
+            case '/api/pan/search':
+            case '/api/mipan/search': {
+                const q = (url.searchParams.get('q') || '').trim();
+                const apiBase = url.searchParams.getAll('url');
+                if (!q) return json({ ok: true, list: [], query: '' });
+                try {
+                    const list = path === '/api/pan/search' ? await panSearch(q, apiBase) : await mipanSearch(q, apiBase);
+                    return json({ ok: true, list, query: q });
+                } catch (e) {
+                    return json({ ok: false, error: e.message, query: q });
+                }
+            }
 
             case '/api/img':
                 return handleImg(url);

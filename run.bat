@@ -24,6 +24,6 @@ echo.
 echo  正在启动服务，访问地址以下方输出为准...
 echo  关闭本窗口即可停止服务。
 echo.
-node server.js
+node --env-file-if-exists=.env server.js
 
 pause

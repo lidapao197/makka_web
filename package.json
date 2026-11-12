@@ -10,6 +10,7 @@
   },
   "scripts": {
     "start": "node server.js",
+    "start:env": "node --env-file-if-exists=.env server.js",
     "dev": "node server.js",
     "build": "node scripts/build-meta.js",
     "deploy": "wrangler deploy"

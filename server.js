@@ -61,6 +61,27 @@ app.get('/api/search', async (req, res) => {
     }
 });
 
+/* 2c. 网盘搜索：盘搜 / 觅搜（上游失败返回 ok:false，由前端提示） */
+app.get('/api/pan/search', async (req, res) => {
+    const q = String(req.query.q || '').trim();
+    if (!q) return res.json({ ok: true, list: [], query: '' });
+    try {
+        res.json({ ok: true, list: await catalog.panSearch(q, req.query.url), query: q });
+    } catch (e) {
+        res.json({ ok: false, error: e.message, query: q });
+    }
+});
+
+app.get('/api/mipan/search', async (req, res) => {
+    const q = String(req.query.q || '').trim();
+    if (!q) return res.json({ ok: true, list: [], query: '' });
+    try {
+        res.json({ ok: true, list: await catalog.mipanSearch(q, req.query.url), query: q });
+    } catch (e) {
+        res.json({ ok: false, error: e.message, query: q });
+    }
+});
+
 /* 3. 图片代理：沿用原白名单 + 防盗链策略，历史脚本的封面均走此路由 */
 const IMG_ALLOWED_HOSTS = /^(image\.tmdb\.org|img\d*\.doubanio\.com|doubanio\.com|p\.static\.bilibili\.com|i0\.hdslb\.com|lain\.bgm\.tv|media\.trakt\.tv|s\d*\.anilist\.co)$/i;
 
